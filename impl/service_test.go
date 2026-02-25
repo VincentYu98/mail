@@ -68,6 +68,49 @@ func TestSendPersonal(t *testing.T) {
 		assertTrue(t, resp1.MailID != resp2.MailID, "different requestIDs => different mails")
 	})
 
+	t.Run("DedupRecovery_PendingStatus", func(t *testing.T) {
+		env := newTestEnv(t)
+		ctx := context.Background()
+		uid := int64(110)
+
+		// Directly insert a stale pending dedup record to simulate a failed previous attempt
+		dedupID := fmt.Sprintf("%d:send_personal:dedup-recover", env.serverID)
+		_, err := testDB.Collection("mail_dedup").InsertOne(ctx, map[string]any{
+			"_id":          dedupID,
+			"serverId":     env.serverID,
+			"scope":        "send_personal",
+			"dedupKey":     "dedup-recover",
+			"requestId":    "dedup-recover",
+			"resultMailId": int64(0),
+			"status":       "pending",
+			"createdAt":    time.Now().UnixMilli() - 60_000,
+			"purgeAt":      time.Now().UnixMilli() + 86_400_000,
+		})
+		must(t, err)
+
+		// SendPersonal with the same requestID should recover: delete stale pending and re-create
+		resp, err := env.svc.SendPersonal(ctx, mail.SendPersonalRequest{
+			ServerID:  env.serverID,
+			RequestID: "dedup-recover",
+			UID:       uid,
+			Kind:      mail.MailKindPersonal,
+			Title:     "Recovered",
+		})
+		must(t, err)
+		assertTrue(t, resp.MailID > 0, "mail should be created after dedup recovery")
+
+		// Verify dedup is now "done" by calling again (idempotent)
+		resp2, err := env.svc.SendPersonal(ctx, mail.SendPersonalRequest{
+			ServerID:  env.serverID,
+			RequestID: "dedup-recover",
+			UID:       uid,
+			Kind:      mail.MailKindPersonal,
+			Title:     "Recovered",
+		})
+		must(t, err)
+		assertEq(t, resp.MailID, resp2.MailID, "idempotent after recovery")
+	})
+
 	t.Run("Validation_MissingUID", func(t *testing.T) {
 		env := newTestEnv(t)
 		ctx := context.Background()
@@ -160,6 +203,18 @@ func TestSendBroadcast(t *testing.T) {
 			ServerID: env.serverID, RequestID: "bc-val",
 		})
 		assertTrue(t, err != nil, "expected error for missing target")
+	})
+
+	t.Run("Validation_FutureStartAtMs", func(t *testing.T) {
+		env := newTestEnv(t)
+		ctx := context.Background()
+		_, err := env.svc.SendBroadcast(ctx, mail.SendBroadcastRequest{
+			ServerID:  env.serverID,
+			RequestID: "v-future",
+			Target:    mail.Target{Scope: "all"},
+			StartAtMs: 1000,
+		})
+		assertTrue(t, err != nil, "expected error for StartAtMs > 0")
 	})
 }
 
@@ -274,6 +329,51 @@ func TestListInbox(t *testing.T) {
 		}
 	})
 
+	t.Run("BroadcastSync_SkipsFailedMatchTarget", func(t *testing.T) {
+		resolver := &mockResolver{failScopes: map[string]bool{"fail_scope": true}}
+		env := newTestEnvWithResolver(t, resolver)
+		ctx := context.Background()
+		uid := int64(207)
+
+		// Broadcast 1: scope="all" (succeeds via built-in)
+		_, err := env.svc.SendBroadcast(ctx, mail.SendBroadcastRequest{
+			ServerID: env.serverID, RequestID: "skip-bc-1",
+			Target: mail.Target{Scope: "all"},
+			Kind:   mail.MailKindBroadcast, Title: "BC1",
+		})
+		must(t, err)
+
+		// Broadcast 2: scope="fail_scope" (matchTarget will error)
+		_, err = env.svc.SendBroadcast(ctx, mail.SendBroadcastRequest{
+			ServerID: env.serverID, RequestID: "skip-bc-2",
+			Target: mail.Target{Scope: "fail_scope"},
+			Kind:   mail.MailKindBroadcast, Title: "BC2-Poison",
+		})
+		must(t, err)
+
+		// Broadcast 3: scope="all" (succeeds)
+		_, err = env.svc.SendBroadcast(ctx, mail.SendBroadcastRequest{
+			ServerID: env.serverID, RequestID: "skip-bc-3",
+			Target: mail.Target{Scope: "all"},
+			Kind:   mail.MailKindBroadcast, Title: "BC3",
+		})
+		must(t, err)
+
+		// ListInbox should deliver bc1 and bc3, skipping bc2
+		list, err := env.svc.ListInbox(ctx, mail.ListInboxRequest{
+			ServerID: env.serverID, UID: uid,
+		})
+		must(t, err)
+		assertEq(t, len(list.Mails), 2, "skip failed broadcast, deliver bc1 and bc3")
+
+		// Second ListInbox should not re-process (cursor advanced past all 3)
+		list2, err := env.svc.ListInbox(ctx, mail.ListInboxRequest{
+			ServerID: env.serverID, UID: uid,
+		})
+		must(t, err)
+		assertEq(t, len(list2.Mails), 2, "cursor advanced, no reprocessing")
+	})
+
 	t.Run("Pagination", func(t *testing.T) {
 		env := newTestEnv(t)
 		ctx := context.Background()
@@ -329,11 +429,11 @@ func TestListInbox(t *testing.T) {
 		uid := int64(205)
 		now := time.Now().UnixMilli()
 
-		// Expired mail
+		// Expired mail (sendAt=now, expireAt=past → already expired)
 		_, err := env.svc.SendPersonal(ctx, mail.SendPersonalRequest{
 			ServerID: env.serverID, RequestID: "exp-1", UID: uid,
 			Kind: mail.MailKindPersonal, Title: "Expired",
-			SendAtMs: now - 86_400_000, ExpireAtMs: now - 1_000,
+			ExpireAtMs: now - 1_000,
 		})
 		must(t, err)
 
@@ -352,25 +452,15 @@ func TestListInbox(t *testing.T) {
 		assertEq(t, list.Mails[0].Title, "Active", "correct mail")
 	})
 
-	t.Run("FutureSendAtNotVisible", func(t *testing.T) {
+	t.Run("FutureSendAtMs_Rejected", func(t *testing.T) {
 		env := newTestEnv(t)
 		ctx := context.Background()
-		uid := int64(206)
-		now := time.Now().UnixMilli()
-
-		// Future mail
 		_, err := env.svc.SendPersonal(ctx, mail.SendPersonalRequest{
-			ServerID: env.serverID, RequestID: "future-1", UID: uid,
+			ServerID: env.serverID, RequestID: "future-1", UID: 206,
 			Kind: mail.MailKindPersonal, Title: "Future",
-			SendAtMs: now + 3_600_000,
+			SendAtMs: 1000, // any positive value
 		})
-		must(t, err)
-
-		list, err := env.svc.ListInbox(ctx, mail.ListInboxRequest{
-			ServerID: env.serverID, UID: uid,
-		})
-		must(t, err)
-		assertEq(t, len(list.Mails), 0, "future mail not visible")
+		assertTrue(t, err != nil, "expected error for SendAtMs > 0")
 	})
 
 	t.Run("Validation_MissingUID", func(t *testing.T) {
@@ -669,8 +759,7 @@ func TestClaimRewards(t *testing.T) {
 			ServerID: env.serverID, RequestID: "crexp-1", UID: uid,
 			Kind: mail.MailKindPersonal, Title: "Expired",
 			Rewards:    []mail.RewardItem{{ItemID: 1, Count: 1}},
-			SendAtMs:   now - 86_400_000,
-			ExpireAtMs: now - 1_000,
+			ExpireAtMs: now - 1_000, // sendAt=now, expireAt=past → already expired
 		})
 		must(t, err)
 

@@ -86,8 +86,9 @@ func (s *serviceImpl) syncBroadcasts(ctx context.Context, serverID int32, uid in
 
 		matched, err := s.matchTarget(ctx, serverID, uid, repo.DocToTarget(bc.Target))
 		if err != nil {
-			// Stop at failure point — don't advance cursor past this
-			break
+			// Skip problematic broadcast to avoid permanently blocking subsequent deliveries
+			newCursor = bc.MailID
+			continue
 		}
 		if matched {
 			doc := repo.BroadcastDocToUserMailDoc(bc, uid)

@@ -67,6 +67,9 @@ func validateSendPersonal(req mail.SendPersonalRequest) error {
 	if req.RequestID == "" {
 		return mail.NewError(mail.ErrInvalidParam, "requestId is required")
 	}
+	if req.SendAtMs > 0 {
+		return mail.NewError(mail.ErrInvalidParam, "sendAtMs is not supported in V1, use 0 for immediate send")
+	}
 	return nil
 }
 
@@ -76,6 +79,9 @@ func validateSendBroadcast(req mail.SendBroadcastRequest) error {
 	}
 	if req.Target.Scope == "" {
 		return mail.NewError(mail.ErrInvalidParam, "target.scope is required")
+	}
+	if req.StartAtMs > 0 {
+		return mail.NewError(mail.ErrInvalidParam, "startAtMs is not supported in V1, use 0 for immediate activation")
 	}
 	return nil
 }

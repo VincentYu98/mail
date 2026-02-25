@@ -14,26 +14,49 @@ type DedupResult struct {
 	ResultMailID int64
 }
 
-// TryInsertDedup attempts to insert a dedup record. On duplicate key, returns the existing record.
+// TryInsertDedup attempts to insert a dedup record with status "pending".
+// On duplicate key:
+//   - If existing record is "done" (or legacy with resultMailId > 0): returns Duplicate=true.
+//   - Otherwise the existing record is a stale pending leftover from a failed attempt:
+//     delete it and re-insert so the caller can retry the full send flow.
 func (r *Repository) TryInsertDedup(ctx context.Context, doc MailDedupDoc) (DedupResult, error) {
+	doc.Status = DedupStatusPending
 	_, err := r.mailDedup.InsertOne(ctx, doc)
 	if err == nil {
 		return DedupResult{Duplicate: false}, nil
 	}
-	if mongo.IsDuplicateKeyError(err) {
-		var existing MailDedupDoc
-		if findErr := r.mailDedup.FindOne(ctx, bson.M{"_id": doc.ID}).Decode(&existing); findErr != nil {
-			return DedupResult{}, fmt.Errorf("dedup find existing: %w", findErr)
-		}
+	if !mongo.IsDuplicateKeyError(err) {
+		return DedupResult{}, fmt.Errorf("dedup insert: %w", err)
+	}
+
+	// Duplicate found — check existing status
+	var existing MailDedupDoc
+	if findErr := r.mailDedup.FindOne(ctx, bson.M{"_id": doc.ID}).Decode(&existing); findErr != nil {
+		return DedupResult{}, fmt.Errorf("dedup find existing: %w", findErr)
+	}
+
+	// Completed record (explicit done, or legacy record with resultMailId > 0)
+	if existing.Status == DedupStatusDone || (existing.Status == "" && existing.ResultMailID > 0) {
 		return DedupResult{Duplicate: true, ResultMailID: existing.ResultMailID}, nil
 	}
-	return DedupResult{}, fmt.Errorf("dedup insert: %w", err)
+
+	// Stale pending record — delete and re-insert
+	_, _ = r.mailDedup.DeleteOne(ctx, bson.M{"_id": doc.ID, "status": bson.M{"$ne": DedupStatusDone}})
+	_, reinsertErr := r.mailDedup.InsertOne(ctx, doc)
+	if reinsertErr != nil {
+		if mongo.IsDuplicateKeyError(reinsertErr) {
+			// Concurrent request completed — retry once
+			return r.TryInsertDedup(ctx, doc)
+		}
+		return DedupResult{}, fmt.Errorf("dedup reinsert: %w", reinsertErr)
+	}
+	return DedupResult{Duplicate: false}, nil
 }
 
-// UpdateDedupResultMailID updates the resultMailId for a dedup record after mail creation.
-func (r *Repository) UpdateDedupResultMailID(ctx context.Context, dedupID string, mailID int64) error {
+// CompleteDedupStatus marks a dedup record as done and sets the resultMailId.
+func (r *Repository) CompleteDedupStatus(ctx context.Context, dedupID string, mailID int64) error {
 	_, err := r.mailDedup.UpdateByID(ctx, dedupID, bson.M{
-		"$set": bson.M{"resultMailId": mailID},
+		"$set": bson.M{"status": DedupStatusDone, "resultMailId": mailID},
 	})
 	return err
 }

@@ -17,6 +17,9 @@ func (a *adminServiceImpl) BatchSendPersonal(ctx context.Context, req mail.Batch
 	if int32(len(req.UIDs)) > a.svc.config.MaxBatchSendSize {
 		return mail.BatchSendPersonalResponse{}, mail.Errorf(mail.ErrInvalidParam, "too many uids, max %d", a.svc.config.MaxBatchSendSize)
 	}
+	if req.SendAtMs > 0 {
+		return mail.BatchSendPersonalResponse{}, mail.NewError(mail.ErrInvalidParam, "sendAtMs is not supported in V1")
+	}
 
 	var (
 		results      []mail.BatchSendResult

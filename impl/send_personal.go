@@ -13,10 +13,7 @@ func (s *serviceImpl) SendPersonal(ctx context.Context, req mail.SendPersonalReq
 	}
 
 	now := nowMs()
-	sendAt := req.SendAtMs
-	if sendAt <= 0 {
-		sendAt = now
-	}
+	sendAt := now // V1: validation rejects SendAtMs > 0, always immediate send
 	expireAt := resolveExpireAt(sendAt, req.ExpireAtMs, s.config.DefaultMailTTLMs)
 	purgeAt := resolvePurgeAt(expireAt, s.config.PurgeGraceMs)
 
@@ -71,8 +68,8 @@ func (s *serviceImpl) SendPersonal(ctx context.Context, req mail.SendPersonalReq
 		return mail.SendResponse{}, mail.Errorf(mail.ErrInternal, "insert user mail: %v", err)
 	}
 
-	// Update dedup with the assigned mailId
-	_ = s.repo.UpdateDedupResultMailID(ctx, dedupID, mailID)
+	// Mark dedup as done with the assigned mailId
+	_ = s.repo.CompleteDedupStatus(ctx, dedupID, mailID)
 
 	// Update unread count
 	_ = s.cache.IncrUnread(ctx, req.ServerID, req.UID, 1)

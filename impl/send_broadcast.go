@@ -13,10 +13,7 @@ func (s *serviceImpl) SendBroadcast(ctx context.Context, req mail.SendBroadcastR
 	}
 
 	now := nowMs()
-	sendAt := req.StartAtMs
-	if sendAt <= 0 {
-		sendAt = now
-	}
+	sendAt := now // V1: validation rejects StartAtMs > 0, always immediate activation
 	expireAt := resolveExpireAt(sendAt, req.ExpireAtMs, s.config.DefaultMailTTLMs)
 	purgeAt := resolvePurgeAt(expireAt, s.config.PurgeGraceMs)
 
@@ -71,8 +68,8 @@ func (s *serviceImpl) SendBroadcast(ctx context.Context, req mail.SendBroadcastR
 		return mail.SendResponse{}, mail.Errorf(mail.ErrInternal, "insert broadcast: %v", err)
 	}
 
-	// Update dedup with assigned mailId
-	_ = s.repo.UpdateDedupResultMailID(ctx, dedupID, mailID)
+	// Mark dedup as done with the assigned mailId
+	_ = s.repo.CompleteDedupStatus(ctx, dedupID, mailID)
 
 	// Update broadcast latest in cache
 	_ = s.cache.SetBroadcastLatest(ctx, req.ServerID, mailID)

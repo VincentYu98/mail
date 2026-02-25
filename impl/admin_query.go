@@ -47,10 +47,16 @@ func (a *adminServiceImpl) QueryByRequestId(ctx context.Context, req mail.QueryB
 		MailID: doc.ResultMailID,
 	}
 
-	if doc.ResultMailID == 0 {
-		resp.Status = "pending"
-	} else {
-		resp.Status = "done"
+	resp.Status = doc.Status
+	if resp.Status == "" {
+		// Backward compatibility for legacy records without status field
+		if doc.ResultMailID > 0 {
+			resp.Status = "done"
+		} else {
+			resp.Status = "pending"
+		}
+	}
+	if resp.Status == "done" {
 		// Determine mail kind from scope
 		switch doc.Scope {
 		case "send_broadcast":

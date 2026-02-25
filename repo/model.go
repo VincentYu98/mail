@@ -70,6 +70,11 @@ type MailboxMetaDoc struct {
 	UpdatedAt       int64 `bson:"updatedAt"`
 }
 
+const (
+	DedupStatusPending = "pending"
+	DedupStatusDone    = "done"
+)
+
 // MailDedupDoc is the BSON document for the mail_dedup collection.
 type MailDedupDoc struct {
 	ID           string `bson:"_id"` // <serverId>:<scope>:<dedupKey>
@@ -78,6 +83,7 @@ type MailDedupDoc struct {
 	DedupKey     string `bson:"dedupKey"`
 	RequestID    string `bson:"requestId"`
 	ResultMailID int64  `bson:"resultMailId"`
+	Status       string `bson:"status"`
 	CreatedAt    int64  `bson:"createdAt"`
 	PurgeAt      int64  `bson:"purgeAt"`
 }

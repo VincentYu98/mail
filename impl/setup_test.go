@@ -210,6 +210,56 @@ func (m *mockPush) eventCount() int {
 }
 
 // ---------------------------------------------------------------------------
+// Mock: TargetResolver
+// ---------------------------------------------------------------------------
+
+type mockResolver struct {
+	failScopes map[string]bool
+}
+
+func (m *mockResolver) Match(ctx context.Context, serverID int32, uid int64, target mail.Target) (bool, error) {
+	if m.failScopes != nil && m.failScopes[target.Scope] {
+		return false, fmt.Errorf("resolver error for scope %s", target.Scope)
+	}
+	return true, nil
+}
+
+func newTestEnvWithResolver(t *testing.T, resolver mail.TargetResolver) *testEnv {
+	t.Helper()
+	sid := nextServerID()
+	granter := &mockGranter{}
+	push := &mockPush{}
+
+	svc := NewService(
+		mail.DefaultConfig(),
+		testRepo,
+		testCache,
+		granter,
+		&mockLocker{},
+		WithPushNotifier(push),
+		WithTargetResolver(resolver),
+	)
+	admin := NewAdminService(svc)
+
+	t.Cleanup(func() {
+		ctx := context.Background()
+		testRedis.Del(ctx,
+			fmt.Sprintf("{mail:seq:%d}", sid),
+			fmt.Sprintf("{broadcast:latest:%d}", sid),
+			fmt.Sprintf("{mail:unread:%d}", sid),
+		)
+	})
+
+	return &testEnv{
+		serverID: sid,
+		svc:      svc,
+		admin:    admin,
+		granter:  granter,
+		push:     push,
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Assertion helpers
 // ---------------------------------------------------------------------------
 
