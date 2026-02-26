@@ -112,6 +112,29 @@ func (r *Repository) FindUserMailsByIDs(ctx context.Context, serverID int32, uid
 	return docs, nil
 }
 
+// FindUserMailIDByRequestID returns the latest mailId for a send_personal request.
+func (r *Repository) FindUserMailIDByRequestID(ctx context.Context, serverID int32, requestID string) (int64, bool, error) {
+	filter := bson.M{
+		"serverId":  serverID,
+		"requestId": requestID,
+	}
+	opts := options.FindOne().
+		SetProjection(bson.M{"mailId": 1}).
+		SetSort(bson.D{{Key: "mailId", Value: -1}})
+
+	var row struct {
+		MailID int64 `bson:"mailId"`
+	}
+	err := r.userMails.FindOne(ctx, filter, opts).Decode(&row)
+	if err == mongo.ErrNoDocuments {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return row.MailID, true, nil
+}
+
 // MarkRead sets readAt for the given mails where readAt is currently null.
 // Returns the list of mailIDs that were actually updated.
 func (r *Repository) MarkRead(ctx context.Context, serverID int32, uid int64, mailIDs []int64, nowMs int64) ([]int64, error) {
@@ -368,11 +391,11 @@ func (r *Repository) FindClaimableMails(ctx context.Context, serverID int32, uid
 // that haven't been claimed yet.
 func (r *Repository) SoftDeleteRecalledBroadcastMails(ctx context.Context, serverID int32, broadcastMailID int64, nowMs int64) (int64, error) {
 	filter := bson.M{
-		"serverId":   serverID,
+		"serverId":    serverID,
 		"origin.type": "broadcast",
-		"origin.id":  broadcastMailID,
-		"claimedAt":  nil,
-		"deletedAt":  nil,
+		"origin.id":   broadcastMailID,
+		"claimedAt":   nil,
+		"deletedAt":   nil,
 	}
 	update := bson.M{"$set": bson.M{"deletedAt": nowMs}}
 	res, err := r.userMails.UpdateMany(ctx, filter, update)
@@ -386,9 +409,9 @@ func (r *Repository) SoftDeleteRecalledBroadcastMails(ctx context.Context, serve
 func (r *Repository) CountBroadcastStats(ctx context.Context, serverID int32, broadcastMailID int64) (delivered, read, claimed, deleted int64, err error) {
 	pipeline := bson.A{
 		bson.M{"$match": bson.M{
-			"serverId":   serverID,
+			"serverId":    serverID,
 			"origin.type": "broadcast",
-			"origin.id":  broadcastMailID,
+			"origin.id":   broadcastMailID,
 		}},
 		bson.M{"$group": bson.M{
 			"_id":       nil,

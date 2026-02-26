@@ -43,6 +43,14 @@ func (r *Repository) ensureUserMailIndexes(ctx context.Context) error {
 			Options: options.Index().SetName("idx_inbox_page"),
 		},
 		{
+			Keys: bson.D{
+				{Key: "serverId", Value: 1},
+				{Key: "requestId", Value: 1},
+				{Key: "mailId", Value: -1},
+			},
+			Options: options.Index().SetName("idx_request_lookup"),
+		},
+		{
 			Keys:    bson.D{{Key: "purgeAt", Value: 1}},
 			Options: options.Index().SetExpireAfterSeconds(0).SetName("ttl_purge"),
 		},
@@ -66,6 +74,14 @@ func (r *Repository) ensureBroadcastMailIndexes(ctx context.Context) error {
 				{Key: "mailId", Value: 1},
 			},
 			Options: options.Index().SetName("idx_cursor_scan"),
+		},
+		{
+			Keys: bson.D{
+				{Key: "serverId", Value: 1},
+				{Key: "requestId", Value: 1},
+				{Key: "mailId", Value: -1},
+			},
+			Options: options.Index().SetName("idx_request_lookup"),
 		},
 		{
 			Keys:    bson.D{{Key: "purgeAt", Value: 1}},

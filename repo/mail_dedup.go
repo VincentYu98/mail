@@ -17,8 +17,8 @@ type DedupResult struct {
 // TryInsertDedup attempts to insert a dedup record with status "pending".
 // On duplicate key:
 //   - If existing record is "done" (or legacy with resultMailId > 0): returns Duplicate=true.
-//   - Otherwise the existing record is a stale pending leftover from a failed attempt:
-//     delete it and re-insert so the caller can retry the full send flow.
+//   - If existing record is pending but the mail is already created, repair dedup and return duplicate.
+//   - Otherwise treat it as stale pending, delete it, and re-insert for caller retry.
 func (r *Repository) TryInsertDedup(ctx context.Context, doc MailDedupDoc) (DedupResult, error) {
 	doc.Status = DedupStatusPending
 	_, err := r.mailDedup.InsertOne(ctx, doc)
@@ -40,6 +40,16 @@ func (r *Repository) TryInsertDedup(ctx context.Context, doc MailDedupDoc) (Dedu
 		return DedupResult{Duplicate: true, ResultMailID: existing.ResultMailID}, nil
 	}
 
+	// Pending record might already have an inserted mail (e.g. dedup completion failed).
+	recoveredMailID, recovered, recoverErr := r.recoverPendingDedupMailID(ctx, existing, doc)
+	if recoverErr != nil {
+		return DedupResult{}, fmt.Errorf("dedup recover pending: %w", recoverErr)
+	}
+	if recovered {
+		_ = r.CompleteDedupStatus(ctx, doc.ID, recoveredMailID)
+		return DedupResult{Duplicate: true, ResultMailID: recoveredMailID}, nil
+	}
+
 	// Stale pending record — delete and re-insert
 	_, _ = r.mailDedup.DeleteOne(ctx, bson.M{"_id": doc.ID, "status": bson.M{"$ne": DedupStatusDone}})
 	_, reinsertErr := r.mailDedup.InsertOne(ctx, doc)
@@ -51,6 +61,28 @@ func (r *Repository) TryInsertDedup(ctx context.Context, doc MailDedupDoc) (Dedu
 		return DedupResult{}, fmt.Errorf("dedup reinsert: %w", reinsertErr)
 	}
 	return DedupResult{Duplicate: false}, nil
+}
+
+func (r *Repository) recoverPendingDedupMailID(ctx context.Context, existing MailDedupDoc, incoming MailDedupDoc) (int64, bool, error) {
+	requestID := existing.RequestID
+	if requestID == "" {
+		requestID = incoming.RequestID
+	}
+	if requestID == "" {
+		requestID = existing.DedupKey
+	}
+	if requestID == "" {
+		return 0, false, nil
+	}
+
+	switch existing.Scope {
+	case "send_personal":
+		return r.FindUserMailIDByRequestID(ctx, existing.ServerID, requestID)
+	case "send_broadcast":
+		return r.FindBroadcastMailIDByRequestID(ctx, existing.ServerID, requestID)
+	default:
+		return 0, false, nil
+	}
 }
 
 // CompleteDedupStatus marks a dedup record as done and sets the resultMailId.

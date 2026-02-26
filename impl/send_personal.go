@@ -51,6 +51,7 @@ func (s *serviceImpl) SendPersonal(ctx context.Context, req mail.SendPersonalReq
 		ServerID:   req.ServerID,
 		UID:        req.UID,
 		MailID:     mailID,
+		RequestID:  req.RequestID,
 		Kind:       string(req.Kind),
 		Source:     req.Source,
 		TemplateID: req.TemplateID,

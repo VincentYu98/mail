@@ -111,6 +111,51 @@ func TestSendPersonal(t *testing.T) {
 		assertEq(t, resp.MailID, resp2.MailID, "idempotent after recovery")
 	})
 
+	t.Run("DedupRecovery_PendingWithExistingMail", func(t *testing.T) {
+		env := newTestEnv(t)
+		ctx := context.Background()
+		uid := int64(111)
+
+		req := mail.SendPersonalRequest{
+			ServerID:  env.serverID,
+			RequestID: "dedup-existing-personal",
+			UID:       uid,
+			Kind:      mail.MailKindPersonal,
+			Title:     "First",
+		}
+		first, err := env.svc.SendPersonal(ctx, req)
+		must(t, err)
+
+		dedupID := fmt.Sprintf("%d:send_personal:%s", env.serverID, req.RequestID)
+		_, err = testDB.Collection("mail_dedup").UpdateByID(ctx, dedupID, map[string]any{
+			"$set": map[string]any{
+				"status":       "pending",
+				"resultMailId": int64(0),
+			},
+		})
+		must(t, err)
+
+		second, err := env.svc.SendPersonal(ctx, req)
+		must(t, err)
+		assertEq(t, first.MailID, second.MailID, "should recover existing mailID")
+
+		count, err := testDB.Collection("user_mails").CountDocuments(ctx, map[string]any{
+			"serverId":  env.serverID,
+			"requestId": req.RequestID,
+		})
+		must(t, err)
+		assertEq(t, count, int64(1), "should not create duplicate user mails")
+
+		var dedup struct {
+			Status       string `bson:"status"`
+			ResultMailID int64  `bson:"resultMailId"`
+		}
+		err = testDB.Collection("mail_dedup").FindOne(ctx, map[string]any{"_id": dedupID}).Decode(&dedup)
+		must(t, err)
+		assertEq(t, dedup.Status, "done", "dedup status repaired to done")
+		assertEq(t, dedup.ResultMailID, first.MailID, "dedup resultMailId repaired")
+	})
+
 	t.Run("Validation_MissingUID", func(t *testing.T) {
 		env := newTestEnv(t)
 		ctx := context.Background()
@@ -185,6 +230,50 @@ func TestSendBroadcast(t *testing.T) {
 		resp2, err := env.svc.SendBroadcast(ctx, req)
 		must(t, err)
 		assertEq(t, resp1.MailID, resp2.MailID, "idempotent mailID")
+	})
+
+	t.Run("DedupRecovery_PendingWithExistingMail", func(t *testing.T) {
+		env := newTestEnv(t)
+		ctx := context.Background()
+
+		req := mail.SendBroadcastRequest{
+			ServerID:  env.serverID,
+			RequestID: "dedup-existing-broadcast",
+			Target:    mail.Target{Scope: "all"},
+			Kind:      mail.MailKindBroadcast,
+			Title:     "First",
+		}
+		first, err := env.svc.SendBroadcast(ctx, req)
+		must(t, err)
+
+		dedupID := fmt.Sprintf("%d:send_broadcast:%s", env.serverID, req.RequestID)
+		_, err = testDB.Collection("mail_dedup").UpdateByID(ctx, dedupID, map[string]any{
+			"$set": map[string]any{
+				"status":       "pending",
+				"resultMailId": int64(0),
+			},
+		})
+		must(t, err)
+
+		second, err := env.svc.SendBroadcast(ctx, req)
+		must(t, err)
+		assertEq(t, first.MailID, second.MailID, "should recover existing mailID")
+
+		count, err := testDB.Collection("broadcast_mails").CountDocuments(ctx, map[string]any{
+			"serverId":  env.serverID,
+			"requestId": req.RequestID,
+		})
+		must(t, err)
+		assertEq(t, count, int64(1), "should not create duplicate broadcast mails")
+
+		var dedup struct {
+			Status       string `bson:"status"`
+			ResultMailID int64  `bson:"resultMailId"`
+		}
+		err = testDB.Collection("mail_dedup").FindOne(ctx, map[string]any{"_id": dedupID}).Decode(&dedup)
+		must(t, err)
+		assertEq(t, dedup.Status, "done", "dedup status repaired to done")
+		assertEq(t, dedup.ResultMailID, first.MailID, "dedup resultMailId repaired")
 	})
 
 	t.Run("Validation_MissingRequestID", func(t *testing.T) {

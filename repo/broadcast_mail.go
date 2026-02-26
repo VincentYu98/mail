@@ -75,3 +75,26 @@ func (r *Repository) FindBroadcastMail(ctx context.Context, serverID int32, mail
 	}
 	return &doc, nil
 }
+
+// FindBroadcastMailIDByRequestID returns the latest mailId for a send_broadcast request.
+func (r *Repository) FindBroadcastMailIDByRequestID(ctx context.Context, serverID int32, requestID string) (int64, bool, error) {
+	filter := bson.M{
+		"serverId":  serverID,
+		"requestId": requestID,
+	}
+	opts := options.FindOne().
+		SetProjection(bson.M{"mailId": 1}).
+		SetSort(bson.D{{Key: "mailId", Value: -1}})
+
+	var row struct {
+		MailID int64 `bson:"mailId"`
+	}
+	err := r.broadcastMails.FindOne(ctx, filter, opts).Decode(&row)
+	if err == mongo.ErrNoDocuments {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return row.MailID, true, nil
+}

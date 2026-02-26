@@ -50,6 +50,7 @@ func (s *serviceImpl) SendBroadcast(ctx context.Context, req mail.SendBroadcastR
 	doc := repo.BroadcastMailDoc{
 		ServerID:   req.ServerID,
 		MailID:     mailID,
+		RequestID:  req.RequestID,
 		Target:     repo.TargetToDoc(req.Target),
 		Kind:       string(req.Kind),
 		Source:     req.Source,
